@@ -67,11 +67,7 @@ def load_gbm_model():
 
 def load_shap_explainer():
     try:
-        # 获取脚本所在目录的绝对路径
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # 构建模型文件的绝对路径
-        explainer_path = os.path.join(script_dir, 'explainer_test.pkl')
-        explainer = load(explainer_path)
+        explainer = load( 'explainer_test.pkl')
         return explainer
     except FileNotFoundError:
         st.error("未找到模型文件！请确保explainer_test.pkl在正确的路径下。")
@@ -79,11 +75,7 @@ def load_shap_explainer():
 
 def load_scaler():
     try:
-        # 获取脚本所在目录的绝对路径
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # 构建模型文件的绝对路径
-        scaler_path = os.path.join(script_dir, 'scaler.pkl')
-        scaler = load(scaler_path)
+        scaler = load('scaler.pkl')
         return scaler
     except FileNotFoundError:
         st.error("未找到模型文件！请确保scaler.pkl在正确的路径下。")
