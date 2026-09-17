@@ -366,6 +366,8 @@ def init_session_state():
         st.session_state['predictions'] = None
     if 'shap_values' not in st.session_state:
         st.session_state['shap_values'] = None
+    if 'calculated_inputs' not in st.session_state:
+        st.session_state['calculated_inputs'] = None
 
 # ============================================
 # Input Synchronization Functions
@@ -381,11 +383,14 @@ def sync_text_to_slider(feature):
         value = float(st.session_state[f'{feature}_text'])
         min_val = FEATURE_RANGES[feature]['min']
         max_val = FEATURE_RANGES[feature]['max']
-        if min_val <= value <= max_val:
-            st.session_state[f'{feature}_value'] = value
-            st.session_state[f'{feature}_slider'] = value
+        # Clamp out-of-range input instead of silently ignoring it
+        value = min(max(value, min_val), max_val)
+        st.session_state[f'{feature}_value'] = value
+        st.session_state[f'{feature}_slider'] = value
+        st.session_state[f'{feature}_text'] = str(value)
     except ValueError:
-        pass
+        # Restore the text box to the last valid value
+        st.session_state[f'{feature}_text'] = str(st.session_state[f'{feature}_value'])
 
 # ============================================
 # Data Collection Functions
@@ -401,6 +406,20 @@ def collect_patient_data():
     data['Antifungal'] = st.session_state['Antifungal_value']
     
     return pd.DataFrame([data])
+
+def inputs_changed_since_calculation():
+    """Check whether current inputs differ from the ones used for the last calculation"""
+    snapshot = st.session_state.get('calculated_inputs')
+    if snapshot is None:
+        return False
+    current = collect_patient_data().iloc[0].to_dict()
+    return any(float(current[k]) != float(snapshot[k]) for k in current)
+
+def render_stale_results_warning():
+    """Warn when displayed results no longer match the current inputs"""
+    if inputs_changed_since_calculation():
+        st.info("ℹ️ Input values have changed since the last calculation. "
+                "Click 'Calculate RRT Risk' in the Data Input tab to update the results below.")
 
 def preprocess_data(patient_original, scaler):
     """Preprocess patient data for model input"""
@@ -844,6 +863,8 @@ def render_data_input_tab(scaler):
                 st.session_state['patient_original'] = patient_original
                 st.session_state['patient_data'] = patient_processed
                 st.session_state['prediction_made'] = True
+                # Snapshot of the inputs used for this calculation (for stale-result detection)
+                st.session_state['calculated_inputs'] = patient_original.iloc[0].to_dict()
                 
                 # Make predictions
                 models = load_all_models()
@@ -851,6 +872,7 @@ def render_data_input_tab(scaler):
                 st.session_state['predictions'] = predictions
                 
                 # Calculate SHAP values
+                st.session_state['shap_values'] = None
                 explainer = load_shap_explainer()
                 if explainer is not None:
                     try:
@@ -870,6 +892,8 @@ def render_predictions_tab():
     if not st.session_state['prediction_made']:
         st.warning("⚠️ Please enter patient data and click 'Calculate' in the Data Input tab first.")
         return
+    
+    render_stale_results_warning()
     
     patient_original = st.session_state['patient_original']
     predictions = st.session_state['predictions']
@@ -929,7 +953,7 @@ def render_predictions_tab():
     # Other Models Comparison
     st.subheader("📈 Comparison with Other Models")
     
-    model_order = ['MLP', 'GBM', 'XGBoost', 'LR', 'RF', 'Bagging', 'NB']
+    model_order = ['MLP', 'GBM', 'XGBoost', 'ADA', 'LR', 'RF', 'Bagging', 'NB']
     
     comparison_data = []
     failed_models = []
@@ -1006,6 +1030,8 @@ def render_interpretability_tab():
         st.warning("⚠️ Please enter patient data and click 'Calculate' in the Data Input tab first.")
         return
     
+    render_stale_results_warning()
+    
     if st.session_state['shap_values'] is None:
         st.error("❌ SHAP values could not be calculated. Please check the model files.")
         return
@@ -1016,6 +1042,9 @@ def render_interpretability_tab():
     explainer = load_shap_explainer()
     
     feature_names = [FEATURE_DISPLAY_NAMES.get(f, f) for f in patient_data.columns]
+    # SHAP values follow patient_data's (reordered) column order, so the original
+    # input values must be taken in that same order to avoid feature misalignment
+    patient_display_values = patient_original[patient_data.columns].iloc[0].values
     
     st.subheader("🔍 Model Interpretability with SHAP")
     
@@ -1050,8 +1079,7 @@ def render_interpretability_tab():
     with st.spinner("Generating waterfall plot..."):
         try:
             base_value = explainer.expected_value
-            patient_values = patient_original.iloc[0].values
-            fig_waterfall = create_shap_waterfall(shap_values, base_value, feature_names, patient_values, explainer)
+            fig_waterfall = create_shap_waterfall(shap_values, base_value, feature_names, patient_display_values, explainer)
             st.pyplot(fig_waterfall)
         except Exception as e:
             st.error(f"Could not generate waterfall plot: {e}")
@@ -1071,8 +1099,7 @@ def render_interpretability_tab():
     with st.spinner("Generating force plot..."):
         try:
             base_value = explainer.expected_value
-            patient_values = patient_original.iloc[0].values
-            fig_force = create_shap_force_plot(shap_values, base_value, feature_names, patient_values)
+            fig_force = create_shap_force_plot(shap_values, base_value, feature_names, patient_display_values)
             st.pyplot(fig_force)
         except Exception as e:
             st.error(f"Could not generate force plot: {e}")
@@ -1083,7 +1110,7 @@ def render_interpretability_tab():
     st.markdown("### 📋 Feature Contribution Values (SHAP Values)")
     
     shap_table_data = []
-    for i, (feat, val, shap_val) in enumerate(zip(feature_names, patient_original.iloc[0].values, shap_values)):
+    for i, (feat, val, shap_val) in enumerate(zip(feature_names, patient_display_values, shap_values)):
         shap_table_data.append({
             'Feature': feat,
             'Input Value': f"{val:.2f}" if isinstance(val, (int, float)) else str(val),
